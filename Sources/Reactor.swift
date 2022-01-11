@@ -3,7 +3,7 @@ import Foundation
 
 // MARK: - State
 
-public protocol State {
+public protocol Store {
     mutating func react(to event: Event)
 }
 
@@ -16,31 +16,31 @@ public protocol Event {}
 // MARK: - Commands
 
 public protocol Command {
-    associatedtype StateType: State
-    func execute(state: StateType, core: Core<StateType>)
+    associatedtype StoreType: Store
+    func execute(store: StoreType, core: Core<StoreType>)
 }
 
 
 // MARK: - Middlewares
 
 public protocol AnyMiddleware {
-    func _process(event: Event, state: Any)
+    func _process(event: Event, store: Any)
 }
 
 public protocol Middleware: AnyMiddleware {
-    associatedtype StateType
-    func process(event: Event, state: StateType)
+    associatedtype StoreType
+    func process(event: Event, store: StoreType)
 }
 
 extension Middleware {
-    public func _process(event: Event, state: Any) {
-        if let state = state as? StateType {
-            process(event: event, state: state)
+    public func _process(event: Event, store: Any) {
+        if let store = store as? StoreType {
+            process(event: event, store: store)
         }
     }
 }
 
-public struct Middlewares<StateType: State> {
+public struct Middlewares<StoreType: Store> {
     private(set) var middleware: AnyMiddleware
 }
 
@@ -48,33 +48,33 @@ public struct Middlewares<StateType: State> {
 // MARK: - Subscribers
 
 public protocol AnySubscriber: class {
-    func _update(with state: Any)
+    func _update(with store: Any)
 }
 
 public protocol Subscriber: AnySubscriber {
-    associatedtype StateType
-    func update(with state: StateType)
+    associatedtype StoreType
+    func update(with store: StoreType)
 }
 
 extension Subscriber {
-    public func _update(with state: Any) {
-        if let state = state as? StateType {
-            update(with: state)
+    public func _update(with store: Any) {
+        if let store = store as? StoreType {
+            update(with: store)
         }
     }
 }
 
-public struct Subscription<StateType: State> {
+public struct Subscription<StoreType: Store> {
     private(set) weak var subscriber: AnySubscriber? = nil
-    let selector: ((StateType) -> Any)?
+    let selector: ((StoreType) -> Any)?
     let notifyQueue: DispatchQueue
 
-    fileprivate func notify(with state: StateType) {
+    fileprivate func notify(with store: StoreType) {
         notifyQueue.async {
             if let selector = self.selector {
-                self.subscriber?._update(with: selector(state))
+                self.subscriber?._update(with: selector(store))
             } else {
-                self.subscriber?._update(with: state)
+                self.subscriber?._update(with: store)
             }
         }
     }
@@ -84,23 +84,23 @@ public struct Subscription<StateType: State> {
 
 // MARK: - Core
 
-public class Core<StateType: State> {
+public class Core<StoreType: Store> {
     
     private let jobQueue: DispatchQueue
-    private var subscriptions = [Subscription<StateType>]()
+    private var subscriptions = [Subscription<StoreType>]()
 
-    private let middlewares: [Middlewares<StateType>]
+    private let middlewares: [Middlewares<StoreType>]
 
-    public private (set) var state: StateType {
+    public private (set) var store: StoreType {
         didSet {
             for subscription in self.subscriptions {
-                subscription.notify(with: state)
+                subscription.notify(with: store)
             }
         }
     }
     
-    public init(state: StateType, middlewares: [AnyMiddleware] = []) {
-        self.state = state
+    public init(store: StoreType, middlewares: [AnyMiddleware] = []) {
+        self.store = store
         self.middlewares = middlewares.map(Middlewares.init)
         let qos: DispatchQoS
         if #available(macOS 10.10, *) {
@@ -114,13 +114,13 @@ public class Core<StateType: State> {
     
     // MARK: - Subscriptions
     
-    public func add(subscriber: AnySubscriber, notifyOnQueue queue: DispatchQueue? = DispatchQueue.main, selector: ((StateType) -> Any)? = nil) {
+    public func add(subscriber: AnySubscriber, notifyOnQueue queue: DispatchQueue? = DispatchQueue.main, selector: ((StoreType) -> Any)? = nil) {
         jobQueue.async {
             guard !self.subscriptions.contains(where: {$0.subscriber === subscriber}) else { return }
             self.subscriptions = self.subscriptions.filter { $0.subscriber != nil }
             let subscription = Subscription(subscriber: subscriber, selector: selector, notifyQueue: queue ?? self.jobQueue)
             self.subscriptions.append(subscription)
-            subscription.notify(with: self.state)
+            subscription.notify(with: self.store)
         }
     }
     
@@ -135,15 +135,14 @@ public class Core<StateType: State> {
     
     public func fire(event: Event) {
         jobQueue.async {
-            self.state.react(to: event)
-            self.middlewares.forEach { $0.middleware._process(event: event, state: self.state) }
+            self.store.react(to: event)
+            self.middlewares.forEach { $0.middleware._process(event: event, store: self.store) }
         }
     }
     
-    public func fire<C: Command>(command: C) where C.StateType == StateType {
+    public func fire<C: Command>(command: C) where C.StoreType == StoreType {
         jobQueue.async {
-            command.execute(state: self.state, core: self)
+            command.execute(store: self.store, core: self)
         }
     }
-    
 }
